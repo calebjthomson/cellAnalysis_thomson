@@ -96,6 +96,44 @@ def nullable_text(value: str | None) -> str | None:
     value = value.strip()
     return value if value else None
 
+def display_frequency_summary(connection: sqlite3.Connection) -> None:
+    """Display relative cell-population frequencies for every sample."""
+    rows = connection.execute(
+        """
+        WITH sample_totals AS (
+            SELECT
+                sample_id,
+                SUM(cell_count) AS total_count
+            FROM cell_counts
+            GROUP BY sample_id
+        )
+        SELECT
+            s.sample_name AS sample,
+            st.total_count,
+            ct.cell_type_key AS population,
+            cc.cell_count AS count,
+            CASE
+                WHEN st.total_count = 0 THEN 0.0
+                ELSE 100.0 * cc.cell_count / st.total_count
+            END AS percentage
+        FROM cell_counts AS cc
+        JOIN samples AS s
+            ON s.sample_id = cc.sample_id
+        JOIN cell_types AS ct
+            ON ct.cell_type_id = cc.cell_type_id
+        JOIN sample_totals AS st
+            ON st.sample_id = cc.sample_id
+        ORDER BY s.sample_name, ct.cell_type_id
+        """
+    )
+
+    headers = ("sample", "total_count", "population", "count", "percentage")
+    print("\n" + "\t".join(headers))
+    for sample, total_count, population, count, percentage in rows:
+        print(
+            f"{sample}\t{total_count}\t{population}\t{count}\t{percentage:.2f}"
+        )
+
 
 def load_database(csv_path: Path = CSV_PATH, db_path: Path = DB_PATH) -> None:
     if not csv_path.is_file():
@@ -273,6 +311,8 @@ def load_database(csv_path: Path = CSV_PATH, db_path: Path = DB_PATH) -> None:
             f"Loaded {sample_count:,} samples from {subject_count:,} subjects "
             f"and {count_rows:,} cell-count measurements."
         )
+
+        display_frequency_summary(connection)
 
     except Exception:
         connection.close()
