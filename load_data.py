@@ -3,9 +3,16 @@ import sqlite3
 import csv
 from pathlib import Path
 
+import matplotlib.pyplot as plt
+import pandas as pd
+from scipy.stats import mannwhitneyu
+
 BASE_DIR = Path(__file__).resolve().parent
 CSV_PATH = BASE_DIR / "cell-count.csv"
 DB_PATH = BASE_DIR / "cell-count.db"
+BOXPLOT_PATH = BASE_DIR / "miraclib_response_boxplots.png"
+STATS_PATH = BASE_DIR / "miraclib_response_statistics.csv"
+BASELINE_TIME = 0
 
 CELL_COLUMNS = {
     "b_cell": "B cell",
@@ -96,10 +103,9 @@ def nullable_text(value: str | None) -> str | None:
     value = value.strip()
     return value if value else None
 
-def display_frequency_summary(connection: sqlite3.Connection) -> None:
-    """Display relative cell-population frequencies for every sample."""
-    rows = connection.execute(
-        """
+def get_frequency_summary(connection: sqlite3.Connection) -> pd.DataFrame:
+    """Return relative cell-population frequencies for every sample."""
+    query = """
         WITH sample_totals AS (
             SELECT
                 sample_id,
@@ -124,15 +130,220 @@ def display_frequency_summary(connection: sqlite3.Connection) -> None:
         JOIN sample_totals AS st
             ON st.sample_id = cc.sample_id
         ORDER BY s.sample_name, ct.cell_type_id
-        """
+    """
+    return pd.read_sql_query(query, connection)
+
+
+def display_frequency_summary(summary: pd.DataFrame) -> None:
+    """Print the relative-frequency summary table."""
+    print("\nRelative frequency summary")
+    print(
+        summary.to_string(
+            index=False,
+            formatters={"percentage": lambda value: f"{value:.2f}"},
+        )
     )
 
-    headers = ("sample", "total_count", "population", "count", "percentage")
-    print("\n" + "\t".join(headers))
-    for sample, total_count, population, count, percentage in rows:
-        print(
-            f"{sample}\t{total_count}\t{population}\t{count}\t{percentage:.2f}"
+
+def benjamini_hochberg(p_values: list[float]) -> list[float]:
+    """Return Benjamini-Hochberg FDR-adjusted p-values."""
+    count = len(p_values)
+    order = sorted(range(count), key=lambda index: p_values[index])
+    adjusted = [0.0] * count
+    running_min = 1.0
+
+    for rank_index in range(count - 1, -1, -1):
+        original_index = order[rank_index]
+        rank = rank_index + 1
+        candidate = p_values[original_index] * count / rank
+        running_min = min(running_min, candidate)
+        adjusted[original_index] = min(running_min, 1.0)
+
+    return adjusted
+
+
+def analyze_miraclib_response(
+    connection: sqlite3.Connection,
+    summary: pd.DataFrame,
+) -> pd.DataFrame:
+    """Compare baseline PBMC frequencies for miraclib responders/non-responders.
+
+    Only baseline samples are used because the stated goal is prediction of
+    treatment response. Including post-treatment measurements would leak
+    information that is unavailable at prediction time.
+    """
+    metadata_query = """
+        SELECT
+            s.sample_name AS sample,
+            s.time_from_treatment_start,
+            sub.subject_name AS subject,
+            sub.condition,
+            sub.treatment,
+            sub.response,
+            sub.sample_type
+        FROM samples AS s
+        JOIN subjects AS sub
+            ON sub.subject_id = s.subject_id
+    """
+    metadata = pd.read_sql_query(metadata_query, connection)
+    analysis = summary.merge(metadata, on="sample", how="left")
+
+    analysis = analysis[
+        (analysis["condition"].str.lower() == "melanoma")
+        & (analysis["treatment"].str.lower() == "miraclib")
+        & (analysis["sample_type"].str.upper() == "PBMC")
+        & (analysis["response"].str.lower().isin(["yes", "no"]))
+        & (analysis["time_from_treatment_start"] == BASELINE_TIME)
+    ].copy()
+
+    if analysis.empty:
+        raise ValueError(
+            "No baseline PBMC samples were found for melanoma patients "
+            "receiving miraclib."
         )
+
+    response_counts = (
+        analysis[["subject", "response"]]
+        .drop_duplicates()
+        ["response"]
+        .value_counts()
+    )
+    print(
+        "\nMiraclib response analysis: baseline melanoma PBMC samples "
+        f"({BASELINE_TIME} days from treatment start)"
+    )
+    print(
+        f"Responders: {response_counts.get('yes', 0)} subjects; "
+        f"non-responders: {response_counts.get('no', 0)} subjects."
+    )
+
+    results = []
+    raw_p_values = []
+
+    for population in CELL_COLUMNS:
+        population_data = analysis[analysis["population"] == population]
+        responders = population_data.loc[
+            population_data["response"].str.lower() == "yes", "percentage"
+        ].astype(float)
+        nonresponders = population_data.loc[
+            population_data["response"].str.lower() == "no", "percentage"
+        ].astype(float)
+
+        if responders.empty or nonresponders.empty:
+            raise ValueError(
+                f"Both response groups are required for population {population!r}."
+            )
+
+        test = mannwhitneyu(
+            responders,
+            nonresponders,
+            alternative="two-sided",
+            method="auto",
+        )
+
+        # Rank-biserial correlation derived from Mann-Whitney U.
+        # Positive values indicate higher frequencies among responders.
+        effect_size = (
+            2.0 * float(test.statistic) / (len(responders) * len(nonresponders))
+            - 1.0
+        )
+
+        raw_p_values.append(float(test.pvalue))
+        results.append(
+            {
+                "population": population,
+                "n_responders": len(responders),
+                "n_nonresponders": len(nonresponders),
+                "responder_median_pct": responders.median(),
+                "nonresponder_median_pct": nonresponders.median(),
+                "median_difference_pct_points": (
+                    responders.median() - nonresponders.median()
+                ),
+                "mann_whitney_u": float(test.statistic),
+                "p_value": float(test.pvalue),
+                "rank_biserial_correlation": effect_size,
+            }
+        )
+
+    adjusted_p_values = benjamini_hochberg(raw_p_values)
+    for row, adjusted_p in zip(results, adjusted_p_values):
+        row["adjusted_p_value"] = adjusted_p
+        row["significant_fdr_0_05"] = adjusted_p < 0.05
+
+    stats = pd.DataFrame(results)
+    stats.to_csv(STATS_PATH, index=False)
+
+    print("\nResponder vs non-responder statistics")
+    printable = stats.copy()
+    numeric_columns = [
+        "responder_median_pct",
+        "nonresponder_median_pct",
+        "median_difference_pct_points",
+        "mann_whitney_u",
+        "p_value",
+        "adjusted_p_value",
+        "rank_biserial_correlation",
+    ]
+    for column in numeric_columns:
+        printable[column] = printable[column].map(lambda value: f"{value:.6g}")
+    print(printable.to_string(index=False))
+
+    significant = stats.loc[
+        stats["significant_fdr_0_05"], "population"
+    ].tolist()
+    if significant:
+        print(
+            "\nSignificant populations after Benjamini-Hochberg correction "
+            "(FDR < 0.05): "
+            + ", ".join(significant)
+        )
+    else:
+        print(
+            "\nNo cell populations were significant after "
+            "Benjamini-Hochberg correction (FDR < 0.05)."
+        )
+
+    plot_response_boxplots(analysis)
+    print(f"Saved statistics to {STATS_PATH}")
+    print(f"Saved boxplots to {BOXPLOT_PATH}")
+
+    return stats
+
+
+def plot_response_boxplots(analysis: pd.DataFrame) -> None:
+    """Save responder/non-responder boxplots for all immune populations."""
+    populations = list(CELL_COLUMNS)
+    figure, axes = plt.subplots(
+        1,
+        len(populations),
+        figsize=(16, 5),
+        sharey=True,
+    )
+
+    for axis, population in zip(axes, populations):
+        population_data = analysis[analysis["population"] == population]
+        responders = population_data.loc[
+            population_data["response"].str.lower() == "yes", "percentage"
+        ].astype(float)
+        nonresponders = population_data.loc[
+            population_data["response"].str.lower() == "no", "percentage"
+        ].astype(float)
+
+        axis.boxplot(
+            [responders, nonresponders],
+            tick_labels=["Responder", "Non-responder"],
+        )
+        axis.set_title(CELL_COLUMNS[population])
+        axis.tick_params(axis="x", labelrotation=30)
+
+    axes[0].set_ylabel("Relative frequency (%)")
+    figure.suptitle(
+        "Baseline PBMC cell frequencies: miraclib responders vs non-responders"
+    )
+    figure.tight_layout()
+    figure.savefig(BOXPLOT_PATH, dpi=200, bbox_inches="tight")
+    plt.close(figure)
+
 
 
 def load_database(csv_path: Path = CSV_PATH, db_path: Path = DB_PATH) -> None:
@@ -312,7 +523,9 @@ def load_database(csv_path: Path = CSV_PATH, db_path: Path = DB_PATH) -> None:
             f"and {count_rows:,} cell-count measurements."
         )
 
-        display_frequency_summary(connection)
+        summary = get_frequency_summary(connection)
+        display_frequency_summary(summary)
+        analyze_miraclib_response(connection, summary)
 
     except Exception:
         connection.close()
