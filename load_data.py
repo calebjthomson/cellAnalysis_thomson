@@ -423,6 +423,42 @@ def report_miraclib_baseline_cohort(
 
     return cohort
 
+def average_b_cells_melanoma_male_responders(
+    connection: sqlite3.Connection,
+) -> float:
+    """Return average B-cell count for baseline male melanoma responders."""
+    query = """
+        SELECT AVG(cc.cell_count)
+        FROM cell_counts AS cc
+        JOIN cell_types AS ct
+            ON ct.cell_type_id = cc.cell_type_id
+        JOIN samples AS s
+            ON s.sample_id = cc.sample_id
+        JOIN subjects AS sub
+            ON sub.subject_id = s.subject_id
+        WHERE LOWER(sub.condition) = 'melanoma'
+          AND LOWER(sub.sex) = 'm'
+          AND LOWER(sub.response) = 'yes'
+          AND s.time_from_treatment_start = 0
+          AND ct.cell_type_key = 'b_cell'
+    """
+
+    result = connection.execute(query).fetchone()[0]
+
+    if result is None:
+        raise ValueError(
+            "No baseline samples found for male melanoma responders."
+        )
+
+    average = float(result)
+
+    print(
+        "Average B-cell count for male melanoma responders "
+        f"at time=0: {average:.2f}"
+    )
+
+    return average
+
 def load_database(csv_path: Path = CSV_PATH, db_path: Path = DB_PATH) -> None:
     if not csv_path.is_file():
         raise FileNotFoundError(
@@ -604,6 +640,9 @@ def load_database(csv_path: Path = CSV_PATH, db_path: Path = DB_PATH) -> None:
         display_frequency_summary(summary)
         analyze_miraclib_response(connection, summary)
         report_miraclib_baseline_cohort(connection)
+        average_b_cells = average_b_cells_melanoma_male_responders(
+            connection
+        )
 
     except Exception:
         connection.close()
