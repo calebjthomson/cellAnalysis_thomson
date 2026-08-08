@@ -26,7 +26,7 @@ Integer keys were used because they are compact and efficient for joins and inde
 I am not as familiar with SQL and how databases should scale to much larger datasets. From what I can see this structure probably would scale.
 
 ## Further analytics
-Interesting further comparisions to complete would including lookinng at if there were differences between projects in results, comparing the different cell counts between groups, looking at further effects from age and sex in treatment efficacy. Althrough no significant hance was 
+Interesting further comparisions to complete would including lookinng at if there were differences between projects in results, comparing the different cell counts between groups, looking at further effects from age and sex in treatment efficacy. Althrough no significant difference was found in the analysis completed, that was specifically looking at melanoma patients, I did not investigate the other groups. It would also be interesting to see if there were time points that were different between responding and not responding groups. I looked at population counts at time 0, but there might be interesting information in how the cell counts respond to treatment in the other timepoints that might show that the treatment is starting to work or not that would encourage patients to stay on the treatment.
 
 # Code Overview
 Right now the code is all in one file. While I know this probably would not be best practice for long term use of this script, my main goal was finishing this submission.
@@ -38,4 +38,10 @@ The format I probably would follow to clean up this code would be to have multip
 ## Statistics note
 In the statistics I decided against running normality tests so I completed a nonparametric t-test in the Mann-Whitney U test, which compares the two groups of independent samples since I saw no reason the data should be paired. I also added a correction for multiple comparisons in the Benjamin-Hochberg correction since we looked at five populations rather than just one.
 
-# Link to 
+# Link to Dashboard
+After running
+'''
+make dashboard
+'''
+
+http://localhost:8501
