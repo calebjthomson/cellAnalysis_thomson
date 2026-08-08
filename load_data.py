@@ -14,6 +14,8 @@ BOXPLOT_PATH = BASE_DIR / "miraclib_response_boxplots.png"
 STATS_PATH = BASE_DIR / "miraclib_response_statistics.csv"
 BASELINE_TIME = 0
 
+## Schema/database
+
 CELL_COLUMNS = {
     "b_cell": "B cell",
     "cd8_t_cell": "CD8 T cell",
@@ -102,6 +104,8 @@ def nullable_text(value: str | None) -> str | None:
         return None
     value = value.strip()
     return value if value else None
+
+## Analysis
 
 def get_frequency_summary(connection: sqlite3.Connection) -> pd.DataFrame:
     """Return relative cell-population frequencies for every sample."""
@@ -309,41 +313,6 @@ def analyze_miraclib_response(
 
     return stats
 
-
-def plot_response_boxplots(analysis: pd.DataFrame) -> None:
-    """Save responder/non-responder boxplots for all immune populations."""
-    populations = list(CELL_COLUMNS)
-    figure, axes = plt.subplots(
-        1,
-        len(populations),
-        figsize=(16, 5),
-        sharey=True,
-    )
-
-    for axis, population in zip(axes, populations):
-        population_data = analysis[analysis["population"] == population]
-        responders = population_data.loc[
-            population_data["response"].str.lower() == "yes", "percentage"
-        ].astype(float)
-        nonresponders = population_data.loc[
-            population_data["response"].str.lower() == "no", "percentage"
-        ].astype(float)
-
-        axis.boxplot(
-            [responders, nonresponders],
-            tick_labels=["Responder", "Non-responder"],
-        )
-        axis.set_title(CELL_COLUMNS[population])
-        axis.tick_params(axis="x", labelrotation=30)
-
-    axes[0].set_ylabel("Relative frequency (%)")
-    figure.suptitle(
-        "Baseline PBMC cell frequencies: miraclib responders vs non-responders"
-    )
-    figure.tight_layout()
-    figure.savefig(BOXPLOT_PATH, dpi=200, bbox_inches="tight")
-    plt.close(figure)
-
 def report_miraclib_baseline_cohort(
     connection: sqlite3.Connection,
 ) -> pd.DataFrame:
@@ -459,6 +428,43 @@ def average_b_cells_melanoma_male_responders(
 
     return average
 
+## plotting
+
+def plot_response_boxplots(analysis: pd.DataFrame) -> None:
+    """Save responder/non-responder boxplots for all immune populations."""
+    populations = list(CELL_COLUMNS)
+    figure, axes = plt.subplots(
+        1,
+        len(populations),
+        figsize=(16, 5),
+        sharey=True,
+    )
+
+    for axis, population in zip(axes, populations):
+        population_data = analysis[analysis["population"] == population]
+        responders = population_data.loc[
+            population_data["response"].str.lower() == "yes", "percentage"
+        ].astype(float)
+        nonresponders = population_data.loc[
+            population_data["response"].str.lower() == "no", "percentage"
+        ].astype(float)
+
+        axis.boxplot(
+            [responders, nonresponders],
+            tick_labels=["Responder", "Non-responder"],
+        )
+        axis.set_title(CELL_COLUMNS[population])
+        axis.tick_params(axis="x", labelrotation=30)
+
+    axes[0].set_ylabel("Relative frequency (%)")
+    figure.suptitle(
+        "Baseline PBMC cell frequencies: miraclib responders vs non-responders"
+    )
+    figure.tight_layout()
+    figure.savefig(BOXPLOT_PATH, dpi=200, bbox_inches="tight")
+    plt.close(figure)
+
+## loading the database and calling analysis/plotting functions
 def load_database(csv_path: Path = CSV_PATH, db_path: Path = DB_PATH) -> None:
     if not csv_path.is_file():
         raise FileNotFoundError(
