@@ -344,7 +344,84 @@ def plot_response_boxplots(analysis: pd.DataFrame) -> None:
     figure.savefig(BOXPLOT_PATH, dpi=200, bbox_inches="tight")
     plt.close(figure)
 
+def report_miraclib_baseline_cohort(
+    connection: sqlite3.Connection,
+) -> pd.DataFrame:
+    """Query and summarize baseline melanoma PBMC samples treated with miraclib."""
+    cohort_query = """
+        SELECT
+            s.sample_name AS sample,
+            sub.subject_name AS subject,
+            p.project_name AS project,
+            sub.response,
+            sub.sex,
+            sub.condition,
+            sub.treatment,
+            sub.sample_type,
+            s.time_from_treatment_start
+        FROM samples AS s
+        JOIN subjects AS sub
+            ON sub.subject_id = s.subject_id
+        JOIN projects AS p
+            ON p.project_id = sub.project_id
+        WHERE LOWER(sub.condition) = 'melanoma'
+          AND LOWER(sub.treatment) = 'miraclib'
+          AND UPPER(sub.sample_type) = 'PBMC'
+          AND s.time_from_treatment_start = ?
+        ORDER BY p.project_name, sub.subject_name, s.sample_name
+    """
 
+    cohort = pd.read_sql_query(
+        cohort_query,
+        connection,
+        params=(BASELINE_TIME,),
+    )
+
+    if cohort.empty:
+        raise ValueError(
+            "No baseline melanoma PBMC samples were found for patients "
+            "treated with miraclib."
+        )
+
+    print(
+        "\nBaseline melanoma PBMC cohort treated with miraclib "
+        f"(time_from_treatment_start = {BASELINE_TIME})"
+    )
+    print(f"Total samples: {len(cohort)}")
+    print(f"Total subjects: {cohort['subject'].nunique()}")
+
+    samples_by_project = (
+        cohort.groupby("project")["sample"]
+        .nunique()
+        .rename("sample_count")
+        .reset_index()
+    )
+    print("\nSamples by project")
+    print(samples_by_project.to_string(index=False))
+
+    subjects_by_response = (
+        cohort[["subject", "response"]]
+        .drop_duplicates()
+        .groupby("response")["subject"]
+        .nunique()
+        .rename("subject_count")
+        .reset_index()
+    )
+    print("\nSubjects by response")
+    print(subjects_by_response.to_string(index=False))
+
+    subjects_by_sex = (
+        cohort[["subject", "sex"]]
+        .drop_duplicates()
+        .groupby("sex")["subject"]
+        .nunique()
+        .rename("subject_count")
+        .reset_index()
+    )
+    print("\nSubjects by sex")
+    print(subjects_by_sex.to_string(index=False))
+
+    return cohort
 
 def load_database(csv_path: Path = CSV_PATH, db_path: Path = DB_PATH) -> None:
     if not csv_path.is_file():
@@ -526,6 +603,7 @@ def load_database(csv_path: Path = CSV_PATH, db_path: Path = DB_PATH) -> None:
         summary = get_frequency_summary(connection)
         display_frequency_summary(summary)
         analyze_miraclib_response(connection, summary)
+        report_miraclib_baseline_cohort(connection)
 
     except Exception:
         connection.close()
